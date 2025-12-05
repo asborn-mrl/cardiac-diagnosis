@@ -2,16 +2,14 @@
 🫀 Intelligent Cardiac Diagnosis System
 A Hybrid Approach Using Fuzzy Logic & LightGBM
 
-Streamlit Web Application for Deployment
+Streamlit Web Application - Cloud Ready (Self-Contained)
 """
 
 import streamlit as st
 import numpy as np
 import pandas as pd
-import pickle
 import plotly.graph_objects as go
 import plotly.express as px
-from fuzzy_transformer import FuzzyFeatureTransformer
 
 # ============ PAGE CONFIGURATION ============
 st.set_page_config(
@@ -65,6 +63,7 @@ st.markdown("""
         padding: 15px;
         border-radius: 8px;
         border-left: 4px solid #3498db;
+        margin-bottom: 10px;
     }
     .info-box {
         background-color: #ebf5fb;
@@ -76,17 +75,146 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ============ LOAD MODEL ============
+# ============ FUZZY FEATURE TRANSFORMER (BUILT-IN) ============
+import skfuzzy as fuzz
+
+class FuzzyFeatureTransformer:
+    """Transforms raw clinical features into fuzzy membership degrees."""
+    
+    def __init__(self):
+        self._define_membership_functions()
+    
+    def _define_membership_functions(self):
+        # Age
+        self.age_range = np.arange(0, 101, 1)
+        self.age_young = fuzz.trapmf(self.age_range, [0, 0, 30, 40])
+        self.age_middle = fuzz.trapmf(self.age_range, [35, 45, 55, 65])
+        self.age_old = fuzz.trapmf(self.age_range, [55, 65, 100, 100])
+        
+        # Blood Pressure
+        self.bp_range = np.arange(80, 210, 1)
+        self.bp_low = fuzz.trapmf(self.bp_range, [80, 80, 90, 110])
+        self.bp_normal = fuzz.trapmf(self.bp_range, [100, 110, 120, 130])
+        self.bp_high = fuzz.trapmf(self.bp_range, [125, 135, 145, 155])
+        self.bp_very_high = fuzz.trapmf(self.bp_range, [150, 165, 210, 210])
+        
+        # Cholesterol
+        self.chol_range = np.arange(100, 600, 1)
+        self.chol_low = fuzz.trapmf(self.chol_range, [100, 100, 150, 180])
+        self.chol_normal = fuzz.trapmf(self.chol_range, [170, 190, 210, 230])
+        self.chol_high = fuzz.trapmf(self.chol_range, [220, 250, 280, 310])
+        self.chol_very_high = fuzz.trapmf(self.chol_range, [300, 350, 600, 600])
+        
+        # Heart Rate
+        self.hr_range = np.arange(60, 220, 1)
+        self.hr_low = fuzz.trapmf(self.hr_range, [60, 60, 100, 120])
+        self.hr_normal = fuzz.trapmf(self.hr_range, [110, 130, 160, 175])
+        self.hr_high = fuzz.trapmf(self.hr_range, [165, 180, 220, 220])
+        
+        # ST Depression
+        self.st_range = np.arange(0, 7, 0.1)
+        self.st_low = fuzz.trapmf(self.st_range, [0, 0, 0.5, 1.0])
+        self.st_medium = fuzz.trapmf(self.st_range, [0.8, 1.5, 2.0, 2.5])
+        self.st_high = fuzz.trapmf(self.st_range, [2.0, 3.0, 7, 7])
+    
+    def get_membership_degree(self, value, universe, membership_function):
+        return fuzz.interp_membership(universe, membership_function, value)
+    
+    def transform_single(self, row):
+        fuzzy_features = {}
+        
+        # Age
+        age = row['age']
+        fuzzy_features['age_young'] = self.get_membership_degree(age, self.age_range, self.age_young)
+        fuzzy_features['age_middle'] = self.get_membership_degree(age, self.age_range, self.age_middle)
+        fuzzy_features['age_old'] = self.get_membership_degree(age, self.age_range, self.age_old)
+        
+        # Blood Pressure
+        bp = row['trestbps']
+        fuzzy_features['bp_low'] = self.get_membership_degree(bp, self.bp_range, self.bp_low)
+        fuzzy_features['bp_normal'] = self.get_membership_degree(bp, self.bp_range, self.bp_normal)
+        fuzzy_features['bp_high'] = self.get_membership_degree(bp, self.bp_range, self.bp_high)
+        fuzzy_features['bp_very_high'] = self.get_membership_degree(bp, self.bp_range, self.bp_very_high)
+        
+        # Cholesterol
+        chol = row['chol']
+        fuzzy_features['chol_low'] = self.get_membership_degree(chol, self.chol_range, self.chol_low)
+        fuzzy_features['chol_normal'] = self.get_membership_degree(chol, self.chol_range, self.chol_normal)
+        fuzzy_features['chol_high'] = self.get_membership_degree(chol, self.chol_range, self.chol_high)
+        fuzzy_features['chol_very_high'] = self.get_membership_degree(chol, self.chol_range, self.chol_very_high)
+        
+        # Heart Rate
+        hr = row['thalach']
+        fuzzy_features['hr_low'] = self.get_membership_degree(hr, self.hr_range, self.hr_low)
+        fuzzy_features['hr_normal'] = self.get_membership_degree(hr, self.hr_range, self.hr_normal)
+        fuzzy_features['hr_high'] = self.get_membership_degree(hr, self.hr_range, self.hr_high)
+        
+        # ST Depression
+        st = row['oldpeak']
+        fuzzy_features['st_low'] = self.get_membership_degree(st, self.st_range, self.st_low)
+        fuzzy_features['st_medium'] = self.get_membership_degree(st, self.st_range, self.st_medium)
+        fuzzy_features['st_high'] = self.get_membership_degree(st, self.st_range, self.st_high)
+        
+        return fuzzy_features
+    
+    def transform(self, df):
+        return df.apply(lambda row: pd.Series(self.transform_single(row)), axis=1)
+
+
+# ============ MODEL TRAINING FUNCTION ============
 @st.cache_resource
-def load_model():
-    """Load the trained model and fuzzy transformer."""
-    try:
-        with open('model/hybrid_cardiac_model.pkl', 'rb') as f:
-            model_data = pickle.load(f)
-        return model_data['model'], model_data['fuzzy_transformer'], model_data['feature_names']
-    except FileNotFoundError:
-        st.error("⚠️ Model file not found. Please ensure 'model/hybrid_cardiac_model.pkl' exists.")
-        return None, None, None
+def train_and_load_model():
+    """Train the model on first run and cache it."""
+    
+    from sklearn.model_selection import train_test_split
+    import lightgbm as lgb
+    
+    # Load data
+    url = "https://archive.ics.uci.edu/ml/machine-learning-databases/heart-disease/processed.cleveland.data"
+    column_names = ['age', 'sex', 'cp', 'trestbps', 'chol', 'fbs', 'restecg', 
+                    'thalach', 'exang', 'oldpeak', 'slope', 'ca', 'thal', 'target']
+    
+    df = pd.read_csv(url, names=column_names, na_values='?')
+    df = df.dropna()
+    df['target'] = (df['target'] > 0).astype(int)
+    df['ca'] = pd.to_numeric(df['ca'], errors='coerce')
+    df['thal'] = pd.to_numeric(df['thal'], errors='coerce')
+    df = df.dropna()
+    
+    # Fuzzy transformation
+    fuzzy_transformer = FuzzyFeatureTransformer()
+    fuzzy_features_df = fuzzy_transformer.transform(df)
+    
+    # Prepare features
+    categorical_features = ['sex', 'cp', 'fbs', 'restecg', 'exang', 'slope', 'ca', 'thal']
+    X_original = df.drop('target', axis=1)
+    X_combined = pd.concat([X_original[categorical_features], fuzzy_features_df], axis=1)
+    y = df['target']
+    
+    # Train model
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_combined, y, test_size=0.2, random_state=42, stratify=y
+    )
+    
+    lgb_params = {
+        'objective': 'binary',
+        'metric': 'binary_logloss',
+        'boosting_type': 'gbdt',
+        'num_leaves': 31,
+        'learning_rate': 0.05,
+        'feature_fraction': 0.9,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 5,
+        'verbose': -1,
+        'random_state': 42,
+        'n_estimators': 200,
+        'class_weight': 'balanced'
+    }
+    
+    model = lgb.LGBMClassifier(**lgb_params)
+    model.fit(X_train, y_train)
+    
+    return model, fuzzy_transformer, list(X_combined.columns)
 
 
 # ============ PREDICTION FUNCTION ============
@@ -94,16 +222,10 @@ def predict_heart_disease(patient_data, model, fuzzy_transformer):
     """Make prediction for a patient."""
     categorical_features = ['sex', 'cp', 'fbs', 'restecg', 'exang', 'slope', 'ca', 'thal']
     
-    # Create DataFrame
     patient_df = pd.DataFrame([patient_data])
-    
-    # Transform to fuzzy features
     fuzzy_features = fuzzy_transformer.transform(patient_df)
-    
-    # Combine features
     X = pd.concat([patient_df[categorical_features], fuzzy_features], axis=1)
     
-    # Predict
     prediction = model.predict(X)[0]
     probability = model.predict_proba(X)[0]
     
@@ -138,44 +260,7 @@ def create_gauge_chart(probability):
         }
     ))
     
-    fig.update_layout(
-        height=300,
-        margin=dict(l=20, r=20, t=50, b=20)
-    )
-    
-    return fig
-
-
-def create_fuzzy_membership_chart(value, feature_name, ranges, memberships, labels):
-    """Create a chart showing fuzzy membership for a feature."""
-    fig = go.Figure()
-    
-    colors = ['#27ae60', '#3498db', '#f39c12', '#e74c3c']
-    
-    for i, (membership, label) in enumerate(zip(memberships, labels)):
-        fig.add_trace(go.Scatter(
-            x=ranges,
-            y=membership,
-            mode='lines',
-            name=label,
-            line=dict(width=2, color=colors[i % len(colors)]),
-            fill='tozeroy',
-            fillcolor=f'rgba{tuple(list(int(colors[i % len(colors)][j:j+2], 16) for j in (1, 3, 5)) + [0.1])}'
-        ))
-    
-    # Add vertical line for current value
-    fig.add_vline(x=value, line_dash="dash", line_color="red", line_width=2,
-                  annotation_text=f"Patient: {value}", annotation_position="top")
-    
-    fig.update_layout(
-        title=f"{feature_name} Fuzzy Membership",
-        xaxis_title=feature_name,
-        yaxis_title="Membership Degree",
-        height=250,
-        margin=dict(l=20, r=20, t=40, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    
+    fig.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
     return fig
 
 
@@ -183,7 +268,6 @@ def create_feature_comparison_chart(patient_data):
     """Create a radar chart comparing patient features to normal ranges."""
     categories = ['Age', 'Blood Pressure', 'Cholesterol', 'Max Heart Rate', 'ST Depression']
     
-    # Normalize values to 0-100 scale for visualization
     patient_values = [
         (patient_data['age'] - 20) / (80 - 20) * 100,
         (patient_data['trestbps'] - 80) / (200 - 80) * 100,
@@ -192,7 +276,6 @@ def create_feature_comparison_chart(patient_data):
         patient_data['oldpeak'] / 6 * 100
     ]
     
-    # Normal ranges (middle values)
     normal_values = [50, 40, 40, 60, 15]
     
     fig = go.Figure()
@@ -231,20 +314,9 @@ def main():
     st.markdown('<p class="main-header">🫀 Intelligent Cardiac Diagnosis System</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Hybrid Approach Using Fuzzy Logic & LightGBM</p>', unsafe_allow_html=True)
     
-    # Load model
-    model, fuzzy_transformer, feature_names = load_model()
-    
-    if model is None:
-        st.warning("⚠️ Please train and save the model first using the Jupyter notebook.")
-        st.info("📝 After training, save the model to `model/hybrid_cardiac_model.pkl`")
-        
-        # Show demo mode
-        st.markdown("---")
-        st.markdown("### 🎮 Demo Mode")
-        st.info("Running in demo mode with simulated predictions.")
-        demo_mode = True
-    else:
-        demo_mode = False
+    # Load/Train model
+    with st.spinner("🔄 Loading AI Model (first time may take a minute)..."):
+        model, fuzzy_transformer, feature_names = train_and_load_model()
     
     # Sidebar - Patient Information Input
     st.sidebar.markdown("## 📋 Patient Information")
@@ -257,14 +329,10 @@ def main():
     
     # Clinical Measurements
     st.sidebar.markdown("### 🏥 Clinical Measurements")
-    trestbps = st.sidebar.slider("Resting Blood Pressure (mm Hg)", 80, 200, 130, 
-                                  help="Resting blood pressure on admission")
-    chol = st.sidebar.slider("Cholesterol (mg/dl)", 100, 400, 240,
-                             help="Serum cholesterol level")
-    thalach = st.sidebar.slider("Max Heart Rate", 60, 210, 150,
-                                help="Maximum heart rate achieved during exercise test")
-    oldpeak = st.sidebar.slider("ST Depression", 0.0, 6.0, 1.0, 0.1,
-                                help="ST depression induced by exercise relative to rest")
+    trestbps = st.sidebar.slider("Resting Blood Pressure (mm Hg)", 80, 200, 130)
+    chol = st.sidebar.slider("Cholesterol (mg/dl)", 100, 400, 240)
+    thalach = st.sidebar.slider("Max Heart Rate", 60, 210, 150)
+    oldpeak = st.sidebar.slider("ST Depression", 0.0, 6.0, 1.0, 0.1)
     
     # Test Results
     st.sidebar.markdown("### 🔬 Test Results")
@@ -284,27 +352,16 @@ def main():
     slope = st.sidebar.selectbox("ST Slope",
                                  options=[(0, "Upsloping"), (1, "Flat"), (2, "Downsloping")],
                                  format_func=lambda x: x[1])
-    ca = st.sidebar.selectbox("Number of Major Vessels (0-3)",
-                              options=[0, 1, 2, 3])
+    ca = st.sidebar.selectbox("Number of Major Vessels (0-3)", options=[0, 1, 2, 3])
     thal = st.sidebar.selectbox("Thalassemia",
                                 options=[(1, "Normal"), (2, "Fixed Defect"), (3, "Reversible Defect")],
                                 format_func=lambda x: x[1])
     
     # Compile patient data
     patient_data = {
-        'age': age,
-        'sex': sex[1],
-        'cp': cp[0],
-        'trestbps': trestbps,
-        'chol': chol,
-        'fbs': fbs[0],
-        'restecg': restecg[0],
-        'thalach': thalach,
-        'exang': exang[0],
-        'oldpeak': oldpeak,
-        'slope': slope[0],
-        'ca': ca,
-        'thal': thal[0]
+        'age': age, 'sex': sex[1], 'cp': cp[0], 'trestbps': trestbps,
+        'chol': chol, 'fbs': fbs[0], 'restecg': restecg[0], 'thalach': thalach,
+        'exang': exang[0], 'oldpeak': oldpeak, 'slope': slope[0], 'ca': ca, 'thal': thal[0]
     }
     
     # Main content area
@@ -313,7 +370,6 @@ def main():
     with col1:
         st.markdown("### 📊 Patient Summary")
         
-        # Display patient info in a nice format
         info_col1, info_col2 = st.columns(2)
         
         with info_col1:
@@ -326,7 +382,7 @@ def main():
             """, unsafe_allow_html=True)
             
             st.markdown(f"""
-            <div class="metric-card" style="margin-top: 10px;">
+            <div class="metric-card">
                 <strong>💓 Vital Signs</strong><br>
                 BP: {trestbps} mm Hg<br>
                 Max HR: {thalach} bpm
@@ -343,7 +399,7 @@ def main():
             """, unsafe_allow_html=True)
             
             st.markdown(f"""
-            <div class="metric-card" style="margin-top: 10px;">
+            <div class="metric-card">
                 <strong>📈 ECG Results</strong><br>
                 ST Depression: {oldpeak}<br>
                 Chest Pain: {cp[1]}
@@ -364,18 +420,10 @@ def main():
         predict_button = st.button("🔮 Predict Heart Disease Risk", use_container_width=True, type="primary")
     
     if predict_button:
-        with st.spinner("Analyzing patient data..."):
+        with st.spinner("🔬 Analyzing patient data with Fuzzy Logic + LightGBM..."):
             import time
-            time.sleep(1)  # Simulate processing
-            
-            if demo_mode:
-                # Demo prediction
-                risk_score = (age/100 * 0.3 + trestbps/200 * 0.2 + chol/400 * 0.2 + 
-                             (1 - thalach/200) * 0.15 + oldpeak/6 * 0.15)
-                probability = [1 - risk_score, risk_score]
-                prediction = 1 if risk_score > 0.5 else 0
-            else:
-                prediction, probability = predict_heart_disease(patient_data, model, fuzzy_transformer)
+            time.sleep(0.5)
+            prediction, probability = predict_heart_disease(patient_data, model, fuzzy_transformer)
         
         # Display Results
         st.markdown("---")
@@ -384,7 +432,6 @@ def main():
         result_col1, result_col2 = st.columns([1, 1])
         
         with result_col1:
-            # Risk Level Box
             risk_prob = probability[1]
             if risk_prob > 0.7:
                 risk_level = "HIGH RISK"
@@ -427,30 +474,28 @@ def main():
             st.plotly_chart(fig_bar, use_container_width=True)
         
         with result_col2:
-            # Gauge Chart
             gauge_chart = create_gauge_chart(probability[1])
             st.plotly_chart(gauge_chart, use_container_width=True)
             
-            # Risk Factors
             st.markdown("### ⚠️ Key Risk Factors")
             
             risk_factors = []
             if age > 55:
-                risk_factors.append(("Age > 55", "age"))
+                risk_factors.append("🔴 Age > 55")
             if trestbps > 140:
-                risk_factors.append(("High Blood Pressure", "bp"))
+                risk_factors.append("🔴 High Blood Pressure")
             if chol > 240:
-                risk_factors.append(("High Cholesterol", "chol"))
+                risk_factors.append("🔴 High Cholesterol")
             if thalach < 120:
-                risk_factors.append(("Low Max Heart Rate", "hr"))
+                risk_factors.append("🔴 Low Max Heart Rate")
             if oldpeak > 2:
-                risk_factors.append(("Significant ST Depression", "st"))
+                risk_factors.append("🔴 Significant ST Depression")
             if exang[0] == 1:
-                risk_factors.append(("Exercise-Induced Angina", "angina"))
+                risk_factors.append("🔴 Exercise-Induced Angina")
             
             if risk_factors:
-                for factor, _ in risk_factors:
-                    st.markdown(f"🔴 {factor}")
+                for factor in risk_factors:
+                    st.markdown(factor)
             else:
                 st.markdown("🟢 No major risk factors identified")
     
@@ -460,7 +505,7 @@ def main():
     <div style="text-align: center; color: #7f8c8d; font-size: 0.9rem;">
         <strong>⚠️ Disclaimer:</strong> This tool is for educational purposes only and should not replace professional medical advice.<br>
         Always consult with a healthcare provider for medical decisions.<br><br>
-        Built with ❤️ using Fuzzy Logic & LightGBM | © 2024
+        Built with ❤️ using Fuzzy Logic & LightGBM
     </div>
     """, unsafe_allow_html=True)
 
